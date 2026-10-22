@@ -1,0 +1,8 @@
+.env
+serviceAccount.json
+node_modules/
+quiz_*.json
+raw_response.txt
+daily.log
+task.xml
+run_daily.bat

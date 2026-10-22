@@ -15,6 +15,9 @@ const DOMAINS = [
   'ilmessaggero.it',
   'ilgiornale.it',
   'ilsole24ore.com',
+  'gazzetta.it',
+  'corrieredellosport.it',
+  'tgcom24.mediaset.it',
 ].join(',');
 
 function yesterday() {
@@ -36,7 +39,7 @@ async function fetchArticles(date) {
     to:   `${date}T23:59:59`,
     language: 'it',
     sortBy: 'popularity',
-    pageSize: '30',
+    pageSize: '50',
     apiKey: process.env.NEWSAPI_KEY,
   });
 
@@ -54,13 +57,23 @@ async function fetchArticles(date) {
 async function generateQuestions(articles, date) {
   const label = formatLabel(date);
 
-  const articleList = articles
+  // Cap per fonte: max 5 articoli per testata, così nessuna domina
+  const perSource = {};
+  const capped = articles
     .filter(a => a.title && a.title !== '[Removed]')
-    .slice(0, 30)
+    .filter(a => {
+      const src = a.source?.name || 'unknown';
+      perSource[src] = (perSource[src] || 0) + 1;
+      return perSource[src] <= 5;
+    })
+    .slice(0, 50);
+
+  const articleList = capped
     .map((a, i) => {
       const fonte = a.source?.name || a.url?.match(/([^/]+)\./)?.[1] || 'N/D';
       const desc = a.description ? `\n   ${a.description}` : '';
-      return `${i + 1}. [${fonte}] ${a.title}${desc}`;
+      const url = a.url ? `\n   URL: ${a.url}` : '';
+      return `${i + 1}. [${fonte}] ${a.title}${desc}${url}`;
     })
     .join('\n\n');
 
@@ -68,14 +81,15 @@ async function generateQuestions(articles, date) {
 
 ${articleList}
 
-STEP 1 — Seleziona le 10 notizie più rilevanti tra quelle elencate sopra. Scegli storie di categorie diverse (cronaca, politica, sport, cronaca_nera, spettacolo, economia). Usa SOLO notizie presenti nella lista.
+STEP 1 — Seleziona le 12 notizie più rilevanti tra quelle elencate sopra. Scegli storie di categorie diverse (cronaca, politica, sport, cronaca_nera, spettacolo, economia). Usa SOLO notizie presenti nella lista.
 
-STEP 2 — Per ogni notizia selezionata genera esattamente 5 domande a risposta multipla in italiano:
+STEP 2 — Per ogni notizia selezionata genera esattamente 6 domande a risposta multipla in italiano:
 - Domanda 1: CHI è il protagonista/soggetto principale
 - Domanda 2: COSA è successo esattamente
 - Domanda 3: DOVE si è svolto il fatto
 - Domanda 4: PERCHÉ è successo / contesto
-- Domanda 5: un dettaglio specifico (numero, dichiarazione, conseguenza)
+- Domanda 5: un dettaglio specifico (numero, cifra, dichiarazione)
+- Domanda 6: una conseguenza o sviluppo successivo
 
 REGOLE:
 - Ogni domanda ha esattamente 4 opzioni (A, B, C, D), una sola corretta
@@ -94,36 +108,47 @@ Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown.
       "riassunto": "2-3 righe che spiegano la notizia",
       "categoria": "cronaca",
       "fonti": ["Corriere della Sera"],
+      "url": "https://www.corriere.it/...",
       "questions": [
-        {
-          "id": "1_1",
-          "tipo": "chi",
-          "testo": "Domanda?",
-          "opzioni": ["Opzione A", "Opzione B", "Opzione C", "Opzione D"],
-          "corretta": 0
-        }
+        {"id": "1_1", "tipo": "chi",         "testo": "Domanda?", "opzioni": ["A", "B", "C", "D"], "corretta": 0},
+        {"id": "1_2", "tipo": "cosa",        "testo": "Domanda?", "opzioni": ["A", "B", "C", "D"], "corretta": 0},
+        {"id": "1_3", "tipo": "dove",        "testo": "Domanda?", "opzioni": ["A", "B", "C", "D"], "corretta": 0},
+        {"id": "1_4", "tipo": "perche",      "testo": "Domanda?", "opzioni": ["A", "B", "C", "D"], "corretta": 0},
+        {"id": "1_5", "tipo": "dettaglio",   "testo": "Domanda?", "opzioni": ["A", "B", "C", "D"], "corretta": 0},
+        {"id": "1_6", "tipo": "conseguenza", "testo": "Domanda?", "opzioni": ["A", "B", "C", "D"], "corretta": 0}
       ]
     }
   ]
 }`;
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-3.5-flash-lite' });
-  const result = await model.generateContent(prompt);
-  const raw = result.response.text();
+  const model = genAI.getGenerativeModel(
+    { model: 'gemini-3.5-flash-lite' },
+    { generationConfig: { responseMimeType: 'application/json' } },
+  );
 
-  const cleaned = raw
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/, '')
-    .trim();
+  async function attempt(promptText) {
+    const result = await model.generateContent(promptText);
+    const raw = result.response.text().trim();
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      fs.writeFileSync('raw_response.txt', raw);
+      throw e;
+    }
+  }
 
   let data;
   try {
-    data = JSON.parse(cleaned);
+    data = await attempt(prompt);
   } catch (e) {
-    fs.writeFileSync('raw_response.txt', raw);
-    console.error('JSON parse fallito. Risposta grezza salvata in raw_response.txt');
-    throw e;
+    // Retry con 10 storie per ridurre l'output
+    console.warn('  JSON parse fallito. Retry con 10 storie...');
+    const fallbackPrompt = prompt.replace(
+      'Seleziona le 12 notizie più rilevanti',
+      'Seleziona le 10 notizie più rilevanti',
+    );
+    data = await attempt(fallbackPrompt);
+    console.warn('  Retry ok (10 storie).');
   }
 
   return data;

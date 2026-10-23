@@ -2,7 +2,8 @@ name: Daily Quiz Generator
 
 on:
   schedule:
-    - cron: '0 5 * * *'  # 06:00 CET (inverno) / 07:00 CEST (estate)
+    - cron: '0 4 * * *'  # 06:00 CEST (estate, UTC+2)
+    - cron: '0 5 * * *'  # 06:00 CET (inverno, UTC+1)
   workflow_dispatch:       # permette lancio manuale dal sito GitHub
 
 jobs:

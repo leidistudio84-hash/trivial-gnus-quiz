@@ -186,11 +186,15 @@ Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown.
 async function generate(date) {
   console.log(`\n[${new Date().toLocaleTimeString()}] Generating quiz for ${date}...`);
 
-  // Skip if already generated
+  // Skip if already generated (unless --force)
+  const force = process.argv.includes('--force');
   const existing = await db.collection('quiz_days').doc(date).get();
-  if (existing.exists) {
+  if (existing.exists && !force) {
     console.log(`✓ Quiz per ${date} già presente in Firestore. Skip.\n`);
     return;
+  }
+  if (existing.exists && force) {
+    console.log(`  ⚠️ --force: sovrascrittura quiz per ${date}`);
   }
 
   // Step 1

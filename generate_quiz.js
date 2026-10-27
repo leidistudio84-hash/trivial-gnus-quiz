@@ -31,26 +31,51 @@ function formatLabel(iso) {
   return `${d}/${m}/${y}`;
 }
 
-// ─── STEP 1: fetch real articles from NewsAPI ────────────────────────────────
-async function fetchArticles(date) {
-  const params = new URLSearchParams({
-    domains: DOMAINS,
-    from: `${date}T00:00:00`,
-    to:   `${date}T23:59:59`,
-    language: 'it',
-    sortBy: 'popularity',
-    pageSize: '50',
-    apiKey: process.env.NEWSAPI_KEY,
-  });
+// ─── STEP 1: fetch articles by category for variety ─────────────────────────
+const CATEGORY_QUERIES = [
+  { key: 'cronaca',      q: 'incidente OR omicidio OR indagini OR polizia' },
+  { key: 'politica',     q: 'governo OR parlamento OR ministro OR premier' },
+  { key: 'economia',     q: 'economia OR borsa OR azienda OR lavoro OR pil' },
+  { key: 'sport',        q: 'calcio OR serie A OR tennis OR ciclismo OR motogp' },
+  { key: 'spettacolo',   q: 'cinema OR musica OR festival OR attore OR cantante' },
+  { key: 'cronaca_nera', q: 'processo OR condanna OR arrestato OR reato OR tribunale' },
+];
 
-  const res = await fetch(`https://newsapi.org/v2/everything?${params}`);
-  const data = await res.json();
+async function fetchArticlesByCategory(date) {
+  const seenUrls = new Set();
+  const allArticles = [];
 
-  if (data.status !== 'ok') throw new Error(`NewsAPI error: ${data.message}`);
-  if (!data.articles || data.articles.length === 0) throw new Error('Nessun articolo trovato per questa data.');
+  for (const cat of CATEGORY_QUERIES) {
+    const params = new URLSearchParams({
+      domains: DOMAINS,
+      q: cat.q,
+      from: `${date}T00:00:00`,
+      to:   `${date}T23:59:59`,
+      language: 'it',
+      sortBy: 'relevancy',
+      pageSize: '10',
+      apiKey: process.env.NEWSAPI_KEY,
+    });
 
-  console.log(`  NewsAPI: ${data.articles.length} articoli trovati`);
-  return data.articles;
+    const res = await fetch(`https://newsapi.org/v2/everything?${params}`);
+    const data = await res.json();
+
+    if (data.status === 'ok' && data.articles) {
+      let added = 0;
+      for (const a of data.articles) {
+        if (a.url && !seenUrls.has(a.url) && a.title && a.title !== '[Removed]') {
+          seenUrls.add(a.url);
+          allArticles.push({ ...a, _suggestedCategory: cat.key });
+          added++;
+        }
+      }
+      console.log(`  [${cat.key}] ${added} articoli`);
+    }
+  }
+
+  if (allArticles.length === 0) throw new Error('Nessun articolo trovato per questa data.');
+  console.log(`  NewsAPI totale: ${allArticles.length} articoli unici da 6 categorie`);
+  return allArticles;
 }
 
 // ─── STEP 2: generate questions with Gemini ──────────────────────────────────
@@ -83,6 +108,8 @@ ${articleList}
 
 STEP 1 — Seleziona le 12 notizie più rilevanti tra quelle elencate sopra. Scegli storie di categorie diverse (cronaca, politica, sport, cronaca_nera, spettacolo, economia). Usa SOLO notizie presenti nella lista.
 
+⚠️ ANTI-ALLUCINAZIONE: ogni storia nel JSON deve corrispondere a uno degli URL forniti nella lista. NON inventare notizie. NON duplicare storie con URL diverso. Se hai meno di 12 notizie reali distinte, genera SOLO quelle disponibili — anche 5 o 8 storie è meglio di 12 inventate.
+
 STEP 2 — Per ogni notizia selezionata genera esattamente 6 domande a risposta multipla in italiano:
 - Domanda 1: CHI è il protagonista/soggetto principale
 - Domanda 2: COSA è successo esattamente
@@ -96,6 +123,7 @@ REGOLE:
 - Le 3 risposte errate devono essere plausibili e dello stesso tipo della corretta
 - Il testo della domanda non deve contenere la risposta
 - Basa le domande SOLO su ciò che è scritto nella notizia fornita
+- Il campo "url" deve essere copiato ESATTAMENTE dalla lista sopra, senza modifiche
 
 Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown. Solo JSON grezzo:
 
@@ -167,11 +195,25 @@ async function generate(date) {
 
   // Step 1
   console.log('  Fetching articles from NewsAPI...');
-  const articles = await fetchArticles(date);
+  const articles = await fetchArticlesByCategory(date);
 
   // Step 2
   console.log('  Generating questions with Gemini...');
   const data = await generateQuestions(articles, date);
+
+  // Step 3: URL validation — discard hallucinated stories
+  const validUrls = new Set(articles.map(a => a.url).filter(Boolean));
+  const before = data.stories.length;
+  data.stories = data.stories.filter(s => {
+    if (!s.url || !validUrls.has(s.url)) {
+      console.warn(`  ⚠️ Scartata storia allucinata: "${s.titolo}" (URL non trovato nella lista)`);
+      return false;
+    }
+    return true;
+  });
+  if (data.stories.length < before) {
+    console.log(`  Validazione URL: ${before - data.stories.length} storie inventate rimosse, ${data.stories.length} valide`);
+  }
 
   const totalQ = data.stories.reduce((n, s) => n + (s.questions?.length || 0), 0);
   data.generated_at = new Date().toISOString();

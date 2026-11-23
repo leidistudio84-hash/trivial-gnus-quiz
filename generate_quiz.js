@@ -148,33 +148,42 @@ Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown.
   ]
 }`;
 
-  const model = genAI.getGenerativeModel(
-    { model: 'gemini-2.0-flash-lite' },
-    { generationConfig: { responseMimeType: 'application/json' } },
-  );
+  async function callModel(modelName, promptText) {
+    const m = genAI.getGenerativeModel(
+      { model: modelName },
+      { generationConfig: { responseMimeType: 'application/json' } },
+    );
+    const result = await m.generateContent(promptText);
+    const raw = result.response.text().trim();
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      fs.writeFileSync('raw_response.txt', raw);
+      throw e;
+    }
+  }
 
   async function attempt(promptText) {
+    const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
     let lastErr;
-    for (let i = 0; i < 3; i++) {
-      try {
-        const result = await model.generateContent(promptText);
-        const raw = result.response.text().trim();
+    for (const modelName of models) {
+      for (let i = 0; i < 3; i++) {
         try {
-          return JSON.parse(raw);
+          return await callModel(modelName, promptText);
         } catch (e) {
-          fs.writeFileSync('raw_response.txt', raw);
-          throw e;
+          lastErr = e;
+          const is503 = e.message && (e.message.includes('503') || e.message.includes('high demand') || e.message.includes('unavailable'));
+          if (is503 && i < 2) {
+            const wait = (i + 1) * 15000;
+            console.warn(`  [${modelName}] 503 (tentativo ${i + 1}/3). Retry tra ${wait / 1000}s...`);
+            await new Promise(r => setTimeout(r, wait));
+            continue;
+          }
+          if (is503) {
+            console.warn(`  [${modelName}] 503 dopo 3 tentativi. Passo al backup...`);
+          }
+          break;
         }
-      } catch (e) {
-        lastErr = e;
-        const is503 = e.message && (e.message.includes('503') || e.message.includes('high demand') || e.message.includes('unavailable'));
-        if (is503 && i < 2) {
-          const wait = (i + 1) * 15000;
-          console.warn(`  API 503 (tentativo ${i + 1}/3). Retry tra ${wait / 1000}s...`);
-          await new Promise(r => setTimeout(r, wait));
-          continue;
-        }
-        throw e;
       }
     }
     throw lastErr;

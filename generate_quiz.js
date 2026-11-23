@@ -82,35 +82,34 @@ async function fetchArticlesByCategory(date) {
 async function generateQuestions(articles, date) {
   const label = formatLabel(date);
 
-  // Cap per fonte: max 5 articoli per testata, così nessuna domina
-  const perSource = {};
-  const capped = articles
+  // Pre-selezione deterministica: max 2 articoli per categoria → varietà garantita dal codice
+  const perCat = {};
+  const selected = articles
     .filter(a => a.title && a.title !== '[Removed]')
     .filter(a => {
-      const src = a.source?.name || 'unknown';
-      perSource[src] = (perSource[src] || 0) + 1;
-      return perSource[src] <= 5;
-    })
-    .slice(0, 50);
+      const cat = a._suggestedCategory || 'altro';
+      perCat[cat] = (perCat[cat] || 0) + 1;
+      return perCat[cat] <= 2;
+    });
 
-  const articleList = capped
+  const articleList = selected
     .map((a, i) => {
       const fonte = a.source?.name || a.url?.match(/([^/]+)\./)?.[1] || 'N/D';
       const desc = a.description ? `\n   ${a.description}` : '';
       const url = a.url ? `\n   URL: ${a.url}` : '';
-      return `${i + 1}. [${fonte}] ${a.title}${desc}${url}`;
+      return `${i + 1}. [${a._suggestedCategory}][${fonte}] ${a.title}${desc}${url}`;
     })
     .join('\n\n');
 
-  const prompt = `Sei un giornalista italiano esperto. Ecco le notizie italiane del ${label} estratte dalle principali testate:
+  const prompt = `Sei un giornalista italiano esperto. Ecco le notizie italiane del ${label} estratte dalle principali testate, già selezionate e bilanciate per categoria:
 
 ${articleList}
 
-STEP 1 — Seleziona le 12 notizie più rilevanti tra quelle elencate sopra. Scegli storie di categorie diverse (cronaca, politica, sport, cronaca_nera, spettacolo, economia). Usa SOLO notizie presenti nella lista.
+Le storie sono già state selezionate: NON devi scegliere, devi generare le domande per TUTTE le storie elencate.
 
-⚠️ ANTI-ALLUCINAZIONE: ogni storia nel JSON deve corrispondere a uno degli URL forniti nella lista. NON inventare notizie. NON duplicare storie con URL diverso. Se hai meno di 12 notizie reali distinte, genera SOLO quelle disponibili — anche 5 o 8 storie è meglio di 12 inventate.
+⚠️ ANTI-ALLUCINAZIONE: ogni storia nel JSON deve corrispondere ESATTAMENTE a uno degli URL forniti. NON inventare notizie. Il campo "url" deve essere copiato LETTERALMENTE dalla lista sopra senza alcuna modifica.
 
-STEP 2 — Per ogni notizia selezionata genera esattamente 6 domande a risposta multipla in italiano:
+Genera esattamente 6 domande a risposta multipla in italiano per ogni storia:
 - Domanda 1: CHI è il protagonista/soggetto principale
 - Domanda 2: COSA è successo esattamente
 - Domanda 3: DOVE si è svolto il fatto
@@ -150,31 +149,53 @@ Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown.
 }`;
 
   const model = genAI.getGenerativeModel(
-    { model: 'gemini-3.5-flash-lite' },
+    { model: 'gemini-2.0-flash-lite' },
     { generationConfig: { responseMimeType: 'application/json' } },
   );
 
   async function attempt(promptText) {
-    const result = await model.generateContent(promptText);
-    const raw = result.response.text().trim();
-    try {
-      return JSON.parse(raw);
-    } catch (e) {
-      fs.writeFileSync('raw_response.txt', raw);
-      throw e;
+    let lastErr;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const result = await model.generateContent(promptText);
+        const raw = result.response.text().trim();
+        try {
+          return JSON.parse(raw);
+        } catch (e) {
+          fs.writeFileSync('raw_response.txt', raw);
+          throw e;
+        }
+      } catch (e) {
+        lastErr = e;
+        const is503 = e.message && (e.message.includes('503') || e.message.includes('high demand') || e.message.includes('unavailable'));
+        if (is503 && i < 2) {
+          const wait = (i + 1) * 15000;
+          console.warn(`  API 503 (tentativo ${i + 1}/3). Retry tra ${wait / 1000}s...`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        throw e;
+      }
     }
+    throw lastErr;
   }
 
   let data;
   try {
     data = await attempt(prompt);
   } catch (e) {
-    // Retry con 10 storie per ridurre l'output
+    // Retry con meno storie per ridurre la dimensione dell'output
     console.warn('  JSON parse fallito. Retry con 10 storie...');
-    const fallbackPrompt = prompt.replace(
-      'Seleziona le 12 notizie più rilevanti',
-      'Seleziona le 10 notizie più rilevanti',
-    );
+    const fallbackSelected = selected.slice(0, Math.min(selected.length, 10));
+    const fallbackList = fallbackSelected
+      .map((a, i) => {
+        const fonte = a.source?.name || a.url?.match(/([^/]+)\./)?.[1] || 'N/D';
+        const desc = a.description ? `\n   ${a.description}` : '';
+        const url = a.url ? `\n   URL: ${a.url}` : '';
+        return `${i + 1}. [${a._suggestedCategory}][${fonte}] ${a.title}${desc}${url}`;
+      })
+      .join('\n\n');
+    const fallbackPrompt = prompt.replace(articleList, fallbackList);
     data = await attempt(fallbackPrompt);
     console.warn('  Retry ok (10 storie).');
   }

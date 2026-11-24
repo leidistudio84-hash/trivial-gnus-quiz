@@ -1,9 +1,11 @@
 require('dotenv').config();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 const admin = require('firebase-admin');
 const fs = require('fs');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 admin.initializeApp({ credential: admin.credential.cert(require('./serviceAccount.json')) });
 const db = admin.firestore();
 
@@ -163,6 +165,23 @@ Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown.
     }
   }
 
+  async function callGroq(promptText) {
+    if (!groq) throw new Error('GROQ_API_KEY non configurata');
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: promptText }],
+      response_format: { type: 'json_object' },
+      temperature: 0.7,
+    });
+    const raw = completion.choices[0].message.content.trim();
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      fs.writeFileSync('raw_response.txt', raw);
+      throw e;
+    }
+  }
+
   async function attempt(promptText) {
     const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
     let lastErr;
@@ -185,6 +204,11 @@ Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown.
           break;
         }
       }
+    }
+    // Fallback Groq se entrambi i Gemini sono saturi
+    if (groq) {
+      console.warn('  Gemini non disponibile. Fallback su Groq (llama-3.3-70b)...');
+      return await callGroq(promptText);
     }
     throw lastErr;
   }

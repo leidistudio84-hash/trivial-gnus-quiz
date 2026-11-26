@@ -125,6 +125,7 @@ REGOLE:
 - Il testo della domanda non deve contenere la risposta
 - Basa le domande SOLO su ciò che è scritto nella notizia fornita
 - Il campo "url" deve essere copiato ESATTAMENTE dalla lista sopra, senza modifiche
+- NON generare domande sulla testata giornalistica, sulla fonte, sulla pubblicazione o sul giornale — le domande devono riguardare SOLO il contenuto della notizia (chi, cosa, dove, perché, dati, conseguenze)
 
 Rispondi ESCLUSIVAMENTE con JSON valido. Zero testo prima o dopo. Zero markdown. Solo JSON grezzo:
 
@@ -271,6 +272,20 @@ async function generate(date) {
   });
   if (data.stories.length < before) {
     console.log(`  Validazione URL: ${before - data.stories.length} storie inventate rimosse, ${data.stories.length} valide`);
+  }
+
+  // Step 3b: filter empty/invalid questions within each story
+  for (const s of data.stories) {
+    const validQ = (s.questions || []).filter(q => q.testo && q.testo.trim() !== '' && Array.isArray(q.opzioni) && q.opzioni.length === 4);
+    const removed = (s.questions?.length || 0) - validQ.length;
+    if (removed > 0) console.warn(`  ⚠️ "${s.titolo}": ${removed} domande vuote/malformate rimosse`);
+    s.questions = validQ;
+  }
+  // discard stories left with no questions
+  const beforeQ = data.stories.length;
+  data.stories = data.stories.filter(s => s.questions.length > 0);
+  if (data.stories.length < beforeQ) {
+    console.warn(`  ⚠️ ${beforeQ - data.stories.length} storie senza domande valide rimosse`);
   }
 
   const totalQ = data.stories.reduce((n, s) => n + (s.questions?.length || 0), 0);

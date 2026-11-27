@@ -2,7 +2,7 @@
 # Rigenera i quiz dal 28 settembre al 26 ottobre con le nuove impostazioni
 # Uso: .\rigenera_archivio.ps1
 
-$start = [datetime]"2026-09-28"
+$start = [datetime]"2026-10-15"
 $end   = [datetime]"2026-10-26"
 $delay = 15  # secondi tra una data e l'altra
 

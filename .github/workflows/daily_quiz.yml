@@ -1,29 +1,36 @@
-name: Daily Quiz Generation
+name: Daily Quiz Generator
 
 on:
-  workflow_dispatch:
   schedule:
     - cron: '0 5 * * *'
+  workflow_dispatch:
 
 jobs:
   generate:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 25
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Write service account
+      - name: Create .env
+        run: |
+          echo "NEWSAPI_KEY=${{ secrets.NEWSAPI_KEY }}" >> .env
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
+
+      - name: Create serviceAccount.json
         run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > serviceAccount.json
 
       - name: Generate quiz
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: node generate_quiz.js
